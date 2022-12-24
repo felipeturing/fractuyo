@@ -14,11 +14,19 @@ var Passcode = function() {
 		currentPasscodeHash = await sha256(passcode)
 	}
 
+	this.decryptAny = async function(encryptedAny, forgetPasscode = false) {
+		let decrypted = await aesDecrypt(encryptedAny)
+		if(forgetPasscode) {
+			currentPasscodeHash = null
+		}
+		return decrypted
+	}
+
 	/**
 	 * Decrypt data that must be inside file.
 	 * @encryptedData is all serialized data needed.
 	 */
-	this.decryptSession = async function(encryptedDataVector) {
+	this.decryptSession = async function(encryptedDataVector, forgetPasscode = false) {
 		dataSessionVector = new Array()
 
 		//Taxpayer metadata
@@ -41,6 +49,10 @@ var Passcode = function() {
 		if(encryptedDataVector[4]) {
 			decrypted = await aesDecrypt(encryptedDataVector[4])
 			dataSessionVector.push(decrypted)
+		}
+
+		if(forgetPasscode) {
+			currentPasscodeHash = null
 		}
 	}
 

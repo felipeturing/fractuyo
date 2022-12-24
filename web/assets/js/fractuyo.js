@@ -599,7 +599,7 @@ var Fractuyo = function() {
 			window.Encoding.hexToBuf( invoice.getEncryptedIscAmount().toString(16).padStart(512, '0') ),
 			window.Encoding.hexToBuf( invoice.getEncryptedIgvAmount().toString(16).padStart(512, '0') ),
 			window.Encoding.hexToBuf( invoice.getEncryptedIcbpAmount().toString(16).padStart(512, '0') ),
-			window.Encoding.hexToBuf( taxpayer.getPaillierPublicKey().encrypt(0).toString(16).padStart(512, '0') ) //Temporally for discount
+			window.Encoding.hexToBuf( invoice.getEncryptedDiscount().toString(16).padStart(512, '0') ) //Temporally for discount
 		])
 
 		let creatingErrorFlag = true
@@ -624,9 +624,13 @@ var Fractuyo = function() {
 					throw new Error(e.message)
 				}
 			}
-			let writable = await fileHandle.createWritable()
 
-			await writable.write(new XMLSerializer().serializeToString(invoice.getXml()))
+			//Password hash is made using total with date
+			await passcode.setupPasscode(invoice.getTotal().toFixed(2).concat(invoice.getIssueDate().toISOString().substr(0, 10)))
+			let encryptedXml = await passcode.encryptSession(new XMLSerializer().serializeToString(invoice.getXml()))
+
+			let writable = await fileHandle.createWritable()
+			await writable.write(encryptedXml)
 			await writable.close()
 			creatingErrorFlag = false
 
@@ -941,7 +945,7 @@ var Fractuyo = function() {
 		currentCdpName.serie = nameParts[1]
 		currentCdpName.number = parseInt(nameParts[2])
 
-		dbInvoices.each("SELECT fecha, config FROM invoice WHERE config & 127 = $typecode AND serie = $serie AND numero = $number", {$typecode: currentCdpName.typeCode, $serie: currentCdpName.serie, $number: currentCdpName.number},
+		dbInvoices.each("SELECT fecha, config, gravado, exonerado, inafecto, isc, igv, icbp, descuento FROM invoice WHERE config & 127 = $typecode AND serie = $serie AND numero = $number LIMIT 1", {$typecode: currentCdpName.typeCode, $serie: currentCdpName.serie, $number: currentCdpName.number},
 			async function(row) {
 				let handleDirectoryConfig = await globalDirHandle.getDirectoryHandle("docs")
 				handleDirectoryConfig = await handleDirectoryConfig.getDirectoryHandle("xml")
@@ -949,7 +953,31 @@ var Fractuyo = function() {
 
 				let fileHandle = await handleDirectoryConfig.getFileHandle(cdpName + ".xml", {})
 				let file = await fileHandle.getFile()
-				let xmlContent = await file.text()
+				let xmlContent = await file.arrayBuffer()
+
+				//Decrypting file
+				const encryptedTotal = taxpayer.getPaillierPublicKey().addition(
+					BigInt("0x" + window.Encoding.bufToHex( row.gravado ) ),
+					BigInt("0x" + window.Encoding.bufToHex( row.exonerado ) ),
+					BigInt("0x" + window.Encoding.bufToHex( row.inafecto ) ),
+					BigInt("0x" + window.Encoding.bufToHex( row.isc ) ),
+					BigInt("0x" + window.Encoding.bufToHex( row.igv ) ),
+					BigInt("0x" + window.Encoding.bufToHex( row.icbp ) )
+					//And substract discount
+				)
+
+				await passcode.setupPasscode((Number( taxpayer.getPaillierPrivateKey().decrypt(encryptedTotal) * 100n / 100n ) / 100).toFixed(2).concat(new Date(row.fecha).toISOString().substr(0, 10)))
+
+				try {
+					xmlContent = await passcode.decryptAny(xmlContent)
+				}
+				catch(e) {
+					Notiflix.Notify.warning("Origen no encriptado.")
+					console.error(e)
+
+					//Maybe is not encrypted
+					xmlContent = window.Encoding.bufToStr(new Uint8Array(xmlContent))
+				}
 
 				//Replace template
 				if(template) {
@@ -1129,9 +1157,40 @@ var Fractuyo = function() {
 		let handleDirectory = await handleDocsDirectory.getDirectoryHandle("xml")
 		handleDirectory = await handleDirectory.getDirectoryHandle(folderName)
 
+		const nameParts = cdpName.split('-')
+		currentCdpName.typeCode = parseInt(nameParts[0])
+		currentCdpName.serie = nameParts[1]
+		currentCdpName.number = parseInt(nameParts[2])
+
+		let encryptedTotal, date
+
+		dbInvoices.each("SELECT fecha, config, gravado, exonerado, inafecto, isc, igv, icbp, descuento FROM invoice WHERE config & 127 = $typecode AND serie = $serie AND numero = $number LIMIT 1", {$typecode: currentCdpName.typeCode, $serie: currentCdpName.serie, $number: currentCdpName.number},
+			async function(row) {
+				date = row.fecha
+				encryptedTotal = taxpayer.getPaillierPublicKey().addition(
+					BigInt("0x" + window.Encoding.bufToHex( row.gravado ) ),
+					BigInt("0x" + window.Encoding.bufToHex( row.exonerado ) ),
+					BigInt("0x" + window.Encoding.bufToHex( row.inafecto ) ),
+					BigInt("0x" + window.Encoding.bufToHex( row.isc ) ),
+					BigInt("0x" + window.Encoding.bufToHex( row.igv ) ),
+					BigInt("0x" + window.Encoding.bufToHex( row.icbp ) )
+					//And substract discount
+				)
+			}
+		)
+
 		let fileHandle = await handleDirectory.getFileHandle(cdpName + ".xml", {})
 		let file = await fileHandle.getFile()
-		let xmlContent = await file.text()
+		let xmlContent = await file.arrayBuffer()
+
+		await passcode.setupPasscode((Number( taxpayer.getPaillierPrivateKey().decrypt(encryptedTotal) * 100n / 100n ) / 100).toFixed(2).concat(new Date(date).toISOString().substr(0, 10)))
+
+		try {
+			xmlContent = await passcode.decryptAny(xmlContent)
+		}
+		catch(e) {
+			console.error(e)
+		}
 
 		let fileName = taxpayer.getIdentification().getNumber() + "-" + cdpName
 
@@ -1222,6 +1281,9 @@ var Fractuyo = function() {
 								writable = await fileHandle.createWritable()
 								await writable.write(dbInvoices.export())
 								await writable.close()
+							}
+							else {
+								triggerButton.disabled = false
 							}
 						})
 					}, function(e) {

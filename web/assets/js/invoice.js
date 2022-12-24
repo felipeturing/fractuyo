@@ -9,7 +9,17 @@ var Invoice = function(taxpayer, customer) {
 	 * Global totals
 	 */
 	var lineExtensionAmount = 0, taxTotalAmount = 0, taxInclusiveAmount = 0, igvAmount = 0, iscAmount = 0, icbpAmount = 0
+	var discount = 0
 	var operationAmounts = [0, 0, 0]
+
+	/**
+	 * Getting total. It means what customer pays.
+	 */
+	this.getTotal = function() {
+		return operationAmounts.reduce((accumulator, value) => {
+			return accumulator + value
+		}, 0) - discount + igvAmount + iscAmount + icbpAmount
+	}
 
 	var shares = Array()
 
@@ -144,6 +154,10 @@ var Invoice = function(taxpayer, customer) {
 
 	this.getLineExtensionAmount = function(withFormat = false) {
 		return withFormat ? totalAmount.toFixed(2) : totalAmount
+	}
+
+	this.getEncryptedDiscount = function() {
+		return taxpayer.getPaillierPublicKey().encrypt( parseInt( Math.round( discount * 100 ) / 100 * 100 ) )
 	}
 
 	this.getEncryptedOperationAmounts = function(index) {
